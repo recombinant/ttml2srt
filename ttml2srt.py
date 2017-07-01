@@ -1,3 +1,5 @@
+#! /usr/bin/env python3
+# -*- coding: utf-8 -*-
 import re
 import sys
 from datetime import timedelta
@@ -23,11 +25,12 @@ for elem in root.findall('./head/styling/style'):
             style['color'] = color
     if 'fontStyle' in elem.attrib:
         fontstyle = elem.attrib['fontStyle']
-        if fontstyle in ('italic', ):
+        if fontstyle in ('italic',):
             style['fontstyle'] = fontstyle
     styles[elem.attrib['id']] = style
 
 body = root.find('./body')
+
 
 # parse correct start and end times
 def parse_time_expression(expression, default_offset=timedelta(0)):
@@ -59,20 +62,21 @@ def parse_time_expression(expression, default_offset=timedelta(0)):
 
     raise ValueError('unknown time expression: %s' % expression)
 
-def parse_times(elem, default_begin=timedelta(0)):
-    if 'begin' in elem.attrib:
-        begin = parse_time_expression(elem.attrib['begin'], default_offset=default_begin)
+
+def parse_times(_elem, default_begin=timedelta(0)):
+    if 'begin' in _elem.attrib:
+        begin = parse_time_expression(_elem.attrib['begin'], default_offset=default_begin)
     else:
         begin = default_begin
-    elem.attrib['{abs}begin'] = begin
+    _elem.attrib['{abs}begin'] = begin
 
     end = None
-    if 'end' in elem.attrib:
-        end = parse_time_expression(elem.attrib['end'], default_offset=default_begin)
+    if 'end' in _elem.attrib:
+        end = parse_time_expression(_elem.attrib['end'], default_offset=default_begin)
 
     dur = None
-    if 'dur' in elem.attrib:
-        dur = parse_time_expression(elem.attrib['dur'])
+    if 'dur' in _elem.attrib:
+        dur = parse_time_expression(_elem.attrib['dur'])
 
     if dur is not None:
         if end is None:
@@ -80,10 +84,11 @@ def parse_times(elem, default_begin=timedelta(0)):
         else:
             end = min(end, begin + dur)
 
-    elem.attrib['{abs}end'] = end
+    _elem.attrib['{abs}end'] = end
 
-    for child in elem:
+    for child in _elem:
         parse_times(child, default_begin=begin)
+
 
 parse_times(body)
 
@@ -96,45 +101,47 @@ for elem in body.findall('.//*[@{abs}end]'):
 
 timestamps.discard(None)
 
+
 # render subtitles on each timestamp
-def render_subtitles(elem, timestamp, parent_style={}):
+def render_subtitles(_elem, _timestamp):
     global styles
 
-    if timestamp < elem.attrib['{abs}begin']:
+    if _timestamp < _elem.attrib['{abs}begin']:
         return ''
-    if elem.attrib['{abs}end'] is not None and timestamp >= elem.attrib['{abs}end']:
+    if _elem.attrib['{abs}end'] is not None and _timestamp >= _elem.attrib['{abs}end']:
         return ''
 
     result = ''
 
-    style = parent_style.copy()
-    if 'style' in elem.attrib:
-        style.update(styles[elem.attrib['style']])
+    _style = {}
+    if 'style' in _elem.attrib:
+        _style.update(styles[_elem.attrib['style']])
 
-    if 'color' in style:
-        result += '<font color="%s">' % style['color']
+    if 'color' in _style:
+        result += '<font color="%s">' % _style['color']
 
-    if style.get('fontstyle') == 'italic':
+    if _style.get('fontstyle') == 'italic':
         result += '<i>'
 
-    if elem.text:
-        result += elem.text.strip()
-    if len(elem):
-        for child in elem:
-            result += render_subtitles(child, timestamp)
+    if _elem.text:
+        result += _elem.text.strip()
+    if len(_elem):
+        for child in _elem:
+            result += render_subtitles(child, _timestamp)
             if child.tail:
                 result += child.tail.strip()
 
-    if 'color' in style:
+    if 'color' in _style:
         result += '</font>'
 
-    if style.get('fontstyle') == 'italic':
+    if _style.get('fontstyle') == 'italic':
         result += '</i>'
 
-    if elem.tag in ('div', 'p', 'br'):
+    if _elem.tag in ('div', 'p', 'br'):
         result += '\n'
 
     return result
+
 
 rendered = []
 for timestamp in sorted(timestamps):
@@ -152,12 +159,13 @@ for timestamp, content in rendered:
     last_text = content
 
 # output srt
-rendered_grouped.append((rendered_grouped[-1][0]+timedelta(hours=24), ''))
+rendered_grouped.append((rendered_grouped[-1][0] + timedelta(hours=24), ''))
 
-def format_timestamp(timestamp: timedelta):
-    return ('%02d:%02d:%02.3f' % (timestamp.total_seconds()//3600,
-                                  timestamp.total_seconds()//60%60,
-                                  timestamp.total_seconds()%60)).replace('.', ',')
+
+def format_timestamp(_timestamp: timedelta):
+    return ('%02d:%02d:%02.3f' % (_timestamp.total_seconds() // 3600,
+                                  _timestamp.total_seconds() // 60 % 60,
+                                  _timestamp.total_seconds() % 60)).replace('.', ',')
 
 
 srt_i = 1
@@ -165,8 +173,7 @@ for i, (timestamp, content) in enumerate(rendered_grouped[:-1]):
     if content == '':
         continue
     print(srt_i)
-    print(format_timestamp(timestamp)+' --> '+format_timestamp(rendered_grouped[i+1][0]))
+    print(format_timestamp(timestamp) + ' --> ' + format_timestamp(rendered_grouped[i + 1][0]))
     print(content)
     srt_i += 1
     print('')
-
