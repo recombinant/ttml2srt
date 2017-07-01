@@ -3,37 +3,14 @@
 import re
 import sys
 from datetime import timedelta
-from xml.etree import ElementTree as ET
-
-filename = sys.argv[1]
-
-tree = ET.parse(filename)
-root = tree.getroot()
-
-# strip namespaces
-for elem in root.getiterator():
-    elem.tag = elem.tag.split('}', 1)[-1]
-    elem.attrib = {name.split('}', 1)[-1]: value for name, value in elem.attrib.items()}
-
-# get styles
-styles = {}
-for elem in root.findall('./head/styling/style'):
-    style = {}
-    if 'color' in elem.attrib:
-        color = elem.attrib['color']
-        if color not in ('#FFFFFF', '#000000'):
-            style['color'] = color
-    if 'fontStyle' in elem.attrib:
-        fontstyle = elem.attrib['fontStyle']
-        if fontstyle in ('italic',):
-            style['fontstyle'] = fontstyle
-    styles[elem.attrib['id']] = style
-
-body = root.find('./body')
+from typing import Dict, Set, List, Tuple, Optional
+from xml.etree import ElementTree
 
 
-# parse correct start and end times
 def parse_time_expression(expression, default_offset=timedelta(0)):
+    """
+    Parse correct start and end times.
+    """
     offset_time = re.match(r'^([0-9]+(\.[0-9]+)?)(h|m|s|ms|f|t)$', expression)
     if offset_time:
         time_value, fraction, metric = offset_time.groups()
@@ -63,20 +40,24 @@ def parse_time_expression(expression, default_offset=timedelta(0)):
     raise ValueError('unknown time expression: %s' % expression)
 
 
-def parse_times(_elem, default_begin=timedelta(0)):
-    if 'begin' in _elem.attrib:
-        begin = parse_time_expression(_elem.attrib['begin'], default_offset=default_begin)
+def parse_times(elem, default_begin=timedelta(0)):
+    """
+    Parse elements and decorate the elements with '{abs}begin' and '{abs}end'
+    attributes for later retrieval with XPath expressions.
+    """
+    if 'begin' in elem.attrib:
+        begin = parse_time_expression(elem.attrib['begin'], default_offset=default_begin)
     else:
         begin = default_begin
-    _elem.attrib['{abs}begin'] = begin
+    elem.attrib['{abs}begin'] = begin
 
     end = None
-    if 'end' in _elem.attrib:
-        end = parse_time_expression(_elem.attrib['end'], default_offset=default_begin)
+    if 'end' in elem.attrib:
+        end = parse_time_expression(elem.attrib['end'], default_offset=default_begin)
 
     dur = None
-    if 'dur' in _elem.attrib:
-        dur = parse_time_expression(_elem.attrib['dur'])
+    if 'dur' in elem.attrib:
+        dur = parse_time_expression(elem.attrib['dur'])
 
     if dur is not None:
         if end is None:
@@ -84,96 +65,126 @@ def parse_times(_elem, default_begin=timedelta(0)):
         else:
             end = min(end, begin + dur)
 
-    _elem.attrib['{abs}end'] = end
+    elem.attrib['{abs}end'] = end
 
-    for child in _elem:
+    for child in elem:
         parse_times(child, default_begin=begin)
 
 
-parse_times(body)
-
-timestamps = set()
-for elem in body.findall('.//*[@{abs}begin]'):
-    timestamps.add(elem.attrib['{abs}begin'])
-
-for elem in body.findall('.//*[@{abs}end]'):
-    timestamps.add(elem.attrib['{abs}end'])
-
-timestamps.discard(None)
-
-
-# render subtitles on each timestamp
-def render_subtitles(_elem, _timestamp):
-    global styles
-
-    if _timestamp < _elem.attrib['{abs}begin']:
+def render_subtitles(styles, elem, timestamp):
+    """
+    Render subtitles on each timestamp.
+    """
+    if timestamp < elem.attrib['{abs}begin']:
         return ''
-    if _elem.attrib['{abs}end'] is not None and _timestamp >= _elem.attrib['{abs}end']:
+    if elem.attrib['{abs}end'] is not None and timestamp >= elem.attrib['{abs}end']:
         return ''
 
     result = ''
 
-    _style = {}
-    if 'style' in _elem.attrib:
-        _style.update(styles[_elem.attrib['style']])
+    style: Dict[str, str] = {}
+    if 'style' in elem.attrib:
+        style.update(styles[elem.attrib['style']])
 
-    if 'color' in _style:
-        result += '<font color="%s">' % _style['color']
+    if 'color' in style:
+        result += '<font color="%s">' % style['color']
 
-    if _style.get('fontstyle') == 'italic':
+    if style.get('font_style') == 'italic':
         result += '<i>'
 
-    if _elem.text:
-        result += _elem.text.strip()
-    if len(_elem):
-        for child in _elem:
-            result += render_subtitles(child, _timestamp)
+    if elem.text:
+        result += elem.text.strip()
+    if len(elem):
+        for child in elem:
+            result += render_subtitles(styles, child, timestamp)
             if child.tail:
                 result += child.tail.strip()
 
-    if 'color' in _style:
+    if 'color' in style:
         result += '</font>'
 
-    if _style.get('fontstyle') == 'italic':
+    if style.get('font_style') == 'italic':
         result += '</i>'
 
-    if _elem.tag in ('div', 'p', 'br'):
+    if elem.tag in ('div', 'p', 'br'):
         result += '\n'
 
     return result
 
 
-rendered = []
-for timestamp in sorted(timestamps):
-    rendered.append((timestamp, re.sub(r'\n\n\n+', '\n\n', render_subtitles(body, timestamp)).strip()))
-
-if not rendered:
-    exit(0)
-
-# group timestamps together if nothing changes
-rendered_grouped = []
-last_text = None
-for timestamp, content in rendered:
-    if content != last_text:
-        rendered_grouped.append((timestamp, content))
-    last_text = content
-
-# output srt
-rendered_grouped.append((rendered_grouped[-1][0] + timedelta(hours=24), ''))
+def format_timestamp(timestamp):
+    return ('{:02d}:{:02d}:{:02.3f}'.format(int(timestamp.total_seconds() // 3600),
+                                            int(timestamp.total_seconds() // 60 % 60),
+                                            timestamp.total_seconds() % 60)).replace('.', ',')
 
 
-def format_timestamp(_timestamp: timedelta):
-    return ('%02d:%02d:%02.3f' % (_timestamp.total_seconds() // 3600,
-                                  _timestamp.total_seconds() // 60 % 60,
-                                  _timestamp.total_seconds() % 60)).replace('.', ',')
+def main():
+    filename = sys.argv[1]
+
+    tree = ElementTree.parse(filename)
+    root = tree.getroot()
+
+    # strip namespaces
+    for elem in root.getiterator():
+        elem.tag = elem.tag.split('}', 1)[-1]
+        elem.attrib = {name.split('}', 1)[-1]: value for name, value in elem.attrib.items()}
+
+    # get styles
+    styles: Dict[str, Dict[str, str]] = {}
+
+    for elem in root.findall('./head/styling/style'):
+        style: Dict[str, str] = {}
+        if 'color' in elem.attrib:
+            color = elem.attrib['color']
+            if color not in ('#FFFFFF', '#000000'):
+                style['color'] = color
+        if 'fontStyle' in elem.attrib:
+            font_style = elem.attrib['fontStyle']
+            if font_style in ('italic',):
+                style['font_style'] = font_style
+        styles[elem.attrib['id']] = style
+
+    body = root.find('./body')
+
+    parse_times(body)
+
+    timestamps: Set[Optional[timedelta]] = set()
+    for elem in body.findall('.//*[@{abs}begin]'):
+        timestamps.add(elem.attrib['{abs}begin'])
+
+    for elem in body.findall('.//*[@{abs}end]'):
+        timestamps.add(elem.attrib['{abs}end'])
+
+    timestamps.discard(None)
+
+    rendered: List[Tuple[timedelta, str]] = []
+    for timestamp in sorted(timestamps):
+        rendered.append((timestamp, re.sub(r'\n\n\n+', '\n\n', render_subtitles(styles, body, timestamp)).strip()))
+
+    if not rendered:
+        exit(0)
+
+    # group timestamps together if nothing changes
+    rendered_grouped: List[Tuple[timedelta, str]] = []
+    last_text = None
+    for timestamp, content in rendered:
+        if content != last_text:
+            rendered_grouped.append((timestamp, content))
+        last_text = content
+
+    # output srt
+    rendered_grouped.append((rendered_grouped[-1][0] + timedelta(hours=24), ''))
+
+    srt_i = 1
+    for i, (timestamp, content) in enumerate(rendered_grouped[:-1]):
+        if content == '':
+            continue
+        print(srt_i)
+        print(format_timestamp(timestamp) + ' --> ' + format_timestamp(rendered_grouped[i + 1][0]))
+        print(content)
+        srt_i += 1
+        print('')
 
 
-srt_i = 1
-for i, (timestamp, content) in enumerate(rendered_grouped[:-1]):
-    if content == '':
-        continue
-    print(srt_i)
-    print(format_timestamp(timestamp) + ' --> ' + format_timestamp(rendered_grouped[i + 1][0]))
-    print(content)
-    srt_i += 1
-    print('')
+if __name__ == '__main__':
+    main()
